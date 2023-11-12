@@ -1,0 +1,196 @@
+# Pipeline for dot-net core 7.0 dockerization
+# 
+trigger:
+    branches:
+        include:
+            - none
+# pr:
+# - '*'
+
+
+variables:
+  DOCKER_BUILDKIT: 1
+  buildConfiguration: 'Release'
+  solution: '**/StatusCodes.sln'
+  project: '**/StatusCodes.Api.csproj'
+  sources: '**/StatusCodes.Api'
+  disable.coverage.autogenerate: 'true'
+  unit_test_failure: 'true'
+  # agentpool: 'MyLocal'
+  # appName: ${{BUILD_REPOSITORY_NAME}}
+  Dockerhub.ContainerRegistryConnection: 'Dockerhub Registry'
+  Image.Repository: 'parthakaushik/dotnet-statuscodes'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Run_Tests
+  displayName: "Build Docker image with SDK and run tests"
+  jobs:
+  - job: Build_Container_Run_Tests
+    steps:
+    - task: Bash@3    
+      displayName: "Create container and run tests"
+      inputs:
+        targetType: 'inline'
+        script: |
+          appName=$(Build.Repository.Name)
+          echo "Repo Name ${appName}"
+          docker build -f ./Dockerfile --target build-env -t ${appName}:$(build.buildid) . 
+          docker create -ti --name ${appName}testcontainer ${appName}:$(build.buildid)
+          docker ps -a
+          # docker cp ${appName}testcontainer:/unittestresults/unittest_results.xml $(Build.ArtifactStagingDirectory)/TestResults/unittest_results.xml
+          # docker cp ${appName}testcontainer:/unittestresults/coverage/  $(Build.ArtifactStagingDirectory)/TestResults/coverage/
+          docker cp ${appName}testcontainer:/unittestresults $(Build.ArtifactStagingDirectory)/TestResults
+
+          # docker cp ${appName}testcontainer:/integrationtestresults/integrationtest_results.xml $(Build.ArtifactStagingDirectory)/TestResults/integrationtest_results.xml
+          # docker cp ${appName}testcontainer:/integrationtestresults/integrationtestcoverage.cobertura.xml $(Build.ArtifactStagingDirectory)/TestResults/integrationtestcoverage.cobertura.xml
+          
+          ls -la $(Build.ArtifactStagingDirectory)/TestResults
+          
+          docker cp ${appName}testcontainer:/app/out $(Build.ArtifactStagingDirectory)/BuildOutput
+
+    - task: PublishTestResults@2
+      displayName: 'Publish test results'
+      inputs:
+        testResultsFormat: 'VSTest'
+        testResultsFiles: '*.xml' 
+        searchFolder: '$(Build.ArtifactStagingDirectory)/TestResults'
+        publishRunAttachments: true
+      
+    - task: Bash@3
+      displayName: 'Create Code Coverage Report'
+      inputs:
+        targetType: 'inline'
+        script: |
+          dotnet tool install -g dotnet-reportgenerator-globaltool
+          reportgenerator -reports:$(Build.ArtifactStagingDirectory)/TestResults/**/coverage.cobertura.xml -targetdir:$(Build.SourcesDirectory)/CodeCoverage "-reporttypes:HtmlInline_AzurePipelines;Cobertura"
+
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish code coverage'
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: '$(Build.SourcesDirectory)/CodeCoverage/Cobertura.xml'
+        pathToSources: $(System.DefaultWorkingDirectory)/$(sources)
+        reportDirectory: '$(Build.SourcesDirectory)/CodeCoverage'
+
+    - task: Bash@3
+      name: testsResult
+      displayName: 'Get test summary from xml'   # $(Build.ArtifactStagingDirectory)/TestResults
+      inputs:
+        targetType: 'inline'
+        script: |
+          # sudo apt-get install -yq xmlstarlet
+          # Get the path of the xml file from the output folder.
+          ls -la $(Build.ArtifactStagingDirectory)/TestResults
+          path_to_unittest=$(find "$(Build.ArtifactStagingDirectory)/TestResults" -type f -name "unittest_results.xml" -print -quit)
+
+                # tried a million-and-a-half ways, xmlstarlet dinnae work for me. Switched to bash tools
+                # if [ -n "$path_to_unittest" ]; then
+                #   tests_out_file="$path_to_unittest"  # Path to test result file
+                #   test_counters=$(xmlstarlet sel -t -c "/ResultSummary/Counters" "$tests_out_file")
+                #   # Extract and set test summary variables
+                #   total=$(echo "$test_counters" | xmlstarlet sel -t -v "/Counters/@total")
+                #   passed=$(echo "$test_counters" | xmlstarlet sel -t -v "/Counters/@passed")
+                #   failed=$(echo "$test_counters" | xmlstarlet sel -t -v "/Counters/@failed")
+                #   aborted=$(echo "$test_counters" | xmlstarlet sel -t -v "/Counters/@aborted")
+                #   echo "##vso[task.setvariable variable=testSummary]total=$total;passed=$passed;failed=$failed;aborted=$aborted"
+                # else
+                #   echo "No .xml file found in $(Build.ArtifactStagingDirectory)/TestResults"
+                # fi
+
+          # counters_info=$(awk -F: '/ResultSummary/ { getline; print $0 }' /unittestresults/unittest_results.xml)
+          # echo `expr match "$counters_info" '\(.*/>\)'`
+          # counters_info3=$(expr match "$counters_info" '\(.*/>\)')
+          # failed_attribute=$(echo "$counters_info3" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}')
+
+          if [ -n "$path_to_unittest" ]; then
+            test_counters=$(awk -F: '/ResultSummary/ { getline; print $0 }' $path_to_unittest)
+            # Remove the last tag </TestRun>
+            test_counters=$(expr match "$test_counters" '\(.*/>\)')
+            failed_tests=$(echo "$test_counters" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}')
+            echo "Failed Tests: "$failed_tests
+          else
+            echo "No .xml file found in $(Build.ArtifactStagingDirectory)/TestResults"
+          fi
+          echo "Initial unit_test_failure"$(variables.unit_test_failure)
+          if [ $failed_tests -ne 0 ]; then 
+            echo "unit tests failed"
+            echo "##vso[task.setvariable variable=UNIT_TESTS_FAILURE;isOutput=true]true"
+          else
+            echo "unit tests passed"
+            echo "##vso[task.setvariable variable=UNIT_TESTS_FAILURE;isOutput=true]false"
+          fi
+          
+    - task: PublishBuildArtifacts@1
+      name: 'PublishBuildArtifacts'
+      displayName: 'Publish Build Artifacts to Artifact Staging Directory'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/BuildOutput'
+        ArtifactName: 'AppBinaries'
+        publishLocation: 'Container'
+
+    - task: Bash@3
+      displayName: "Check BuildOutput copy"
+      inputs:
+        targetType: 'inline'
+        script: ls -la $(Build.ArtifactStagingDirectory)/BuildOutput
+
+- stage: Deployable_DockerImage_With_Runtime_Only
+  dependsOn: Run_Tests
+  condition: eq(dependencies.Run_Tests.outputs['Build_Container_Run_Tests.testsResult.UNIT_TESTS_FAILURE'], false)
+  displayName: "Build Docker image with Runtime Only"
+  jobs:
+  - job: Build_Deployable_Container
+    steps:
+    # - task: CopyFiles@2
+    #   displayName: "Copy Build Output to working directory"
+    #   inputs:
+    #     sourceFolder: "$(Build.ArtifactStagingDirectory)/BuildOutput"
+    #     contents: '**'
+    #     targetFolder: "."
+
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        artifactName: 'AppBinaries'
+        targetPath: "./AppBinaries"
+
+    - task: Bash@3
+      displayName: "Check BuildOutput copy"
+      inputs:
+        targetType: 'inline'
+        script: |
+          ls -la .
+          ls -la ./AppBinaries
+
+    - task: Docker@2
+      displayName: "Docker build image"
+      inputs:
+        Dockerfile: 'Dockerfile'
+        containerRegistry: '$(Dockerhub.ContainerRegistryConnection)'
+        repository: '$(Image.Repository)'
+        command: build
+        arguments: --target base
+        tags: |
+          $(Build.BuildNumber)
+          latest
+
+    - task: Bash@3    
+      displayName: "Check images"
+      inputs:
+        targetType: 'inline'
+        script: |
+          docker images
+
+    - task: Docker@2
+      displayName: "Docker push images"
+      inputs:
+        Dockerfile: 'Dockerfile'
+        containerRegistry: '$(Dockerhub.ContainerRegistryConnection)'
+        repository: '$(Image.Repository)'
+        command: push
+        tags: |
+          $(Build.BuildNumber)
+          latest
+
