@@ -46,7 +46,9 @@ stages:
 
           # docker cp ${appName}testcontainer:/integrationtestresults/integrationtest_results.xml $(Build.ArtifactStagingDirectory)/TestResults/integrationtest_results.xml
           # docker cp ${appName}testcontainer:/integrationtestresults/integrationtestcoverage.cobertura.xml $(Build.ArtifactStagingDirectory)/TestResults/integrationtestcoverage.cobertura.xml
-          
+          docker cp ${appName}testcontainer:/integrationtestresults $(Build.ArtifactStagingDirectory)/TestResults
+
+
           ls -la $(Build.ArtifactStagingDirectory)/TestResults
           
           docker cp ${appName}testcontainer:/app/out $(Build.ArtifactStagingDirectory)/BuildOutput
@@ -55,8 +57,18 @@ stages:
       displayName: 'Publish test results'
       inputs:
         testResultsFormat: 'VSTest'
-        testResultsFiles: '*.xml' 
+        testResultsFiles: 'unittest_results.xml' 
         searchFolder: '$(Build.ArtifactStagingDirectory)/TestResults'
+        mergeTestResults: true
+        publishRunAttachments: true
+
+    - task: PublishTestResults@2
+      displayName: 'Publish test results'
+      inputs:
+        testResultsFormat: 'VSTest'
+        testResultsFiles: 'integrationtest_results.xml' 
+        searchFolder: '$(Build.ArtifactStagingDirectory)/TestResults/integrationtestresults'
+        mergeTestResults: true
         publishRunAttachments: true
       
     - task: Bash@3

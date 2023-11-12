@@ -30,14 +30,21 @@ RUN dotnet tool install dotnet-reportgenerator-globaltool --version 5.1.26 --too
 # for exclude, use %2c for ,
 RUN dotnet test --filter FullyQualifiedName~Unit.Tests --collect:"XPlat Code Coverage" --results-directory /unittestresults --logger "trx;LogFileName=unittest_results.xml" /p:CollectCoverage=true /p:CoverletOutputFormat=json%2cCobertura /p:CoverletOutput=/unittestresults/coverage/ /p:Exclude="[xunit.*]*%2c[StackExchange.*]*" ; exit 0
 
-# Comment out Integration tests for now, requires other real services or wiremock services deployed to this agent 
-# RUN dotnet test --filter FullyQualifiedName~Integration.Tests --collect:"XPlat Code Coverage" --results-directory /integrationtestresults --logger "trx;LogFileName=integrationtest_results.xml" /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:CoverletOutput=./integrationtestresults/coverage/ /p:Exclude="[xunit.*]*%2c[StackExchange.*]*" ; exit 0
+# Integration tests 
+RUN dotnet test --filter FullyQualifiedName~Integration.Tests --collect:"XPlat Code Coverage" --results-directory /integrationtestresults --logger "trx;LogFileName=integrationtest_results.xml" /p:CollectCoverage=true /p:CoverletOutputFormat=json%2cCobertura /p:CoverletOutput=./integrationtestresults/coverage/ /p:Exclude="[xunit.*]*%2c[StackExchange.*]*" ; exit 0
 
 # Check for zero errors
 RUN testxml=/unittestresults/unittest_results.xml; \
+    test_counters=$(awk -F: '/ResultSummary/ { getline; print $0 }' $testxml) \
     test_counters=$(expr match "$test_counters" '\(.*/>\)'); \
-    failed_tests=$(echo "$test_counters" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}'); \
-    exit $failed_tests
+    failed_unit_tests=$(echo "$test_counters" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}'); \
+    echo $failed_unit_tests > ./failed_unit_tests
+
+RUN testxml=/integrationtestresults/integrationtest_results.xml; \
+    test_counters=$(awk -F: '/ResultSummary/ { getline; print $0 }' $testxml) \
+    test_counters=$(expr match "$test_counters" '\(.*/>\)'); \
+    failed_integration_tests=$(echo "$test_counters" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}'); \
+    exit $((failed_integration_tests + $(cat ./failed_unit_tests)))
 
 # build and publish
 RUN dotnet publish StatusCodes.Api/StatusCodes.Api.csproj -c Release -o out /p:Version=${version}
