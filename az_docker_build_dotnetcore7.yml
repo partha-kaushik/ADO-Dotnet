@@ -50,6 +50,7 @@ stages:
 
 
           ls -la $(Build.ArtifactStagingDirectory)/TestResults
+          ls -la $(Build.ArtifactStagingDirectory)/TestResults/integrationtestresults          
           
           docker cp ${appName}testcontainer:/app/out $(Build.ArtifactStagingDirectory)/BuildOutput
 
@@ -59,7 +60,6 @@ stages:
         testResultsFormat: 'VSTest'
         testResultsFiles: 'unittest_results.xml' 
         searchFolder: '$(Build.ArtifactStagingDirectory)/TestResults'
-        mergeTestResults: true
         publishRunAttachments: true
 
     - task: PublishTestResults@2
@@ -68,7 +68,6 @@ stages:
         testResultsFormat: 'VSTest'
         testResultsFiles: 'integrationtest_results.xml' 
         searchFolder: '$(Build.ArtifactStagingDirectory)/TestResults/integrationtestresults'
-        mergeTestResults: true
         publishRunAttachments: true
       
     - task: Bash@3
@@ -96,7 +95,6 @@ stages:
           # sudo apt-get install -yq xmlstarlet
           # Get the path of the xml file from the output folder.
           ls -la $(Build.ArtifactStagingDirectory)/TestResults
-          path_to_unittest=$(find "$(Build.ArtifactStagingDirectory)/TestResults" -type f -name "unittest_results.xml" -print -quit)
 
                 # tried a million-and-a-half ways, xmlstarlet dinnae work for me. Switched to bash tools
                 # if [ -n "$path_to_unittest" ]; then
@@ -117,22 +115,42 @@ stages:
           # counters_info3=$(expr match "$counters_info" '\(.*/>\)')
           # failed_attribute=$(echo "$counters_info3" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}')
 
+          path_to_unittest=$(find "$(Build.ArtifactStagingDirectory)/TestResults" -type f -name "unittest_results.xml" -print -quit)
           if [ -n "$path_to_unittest" ]; then
             test_counters=$(awk -F: '/ResultSummary/ { getline; print $0 }' $path_to_unittest)
             # Remove the last tag </TestRun>
             test_counters=$(expr match "$test_counters" '\(.*/>\)')
-            failed_tests=$(echo "$test_counters" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}')
-            echo "Failed Tests: "$failed_tests
+            failed_unit_tests=$(echo "$test_counters" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}')
+            echo "Failed Tests: "$failed_unit_tests
           else
             echo "No .xml file found in $(Build.ArtifactStagingDirectory)/TestResults"
           fi
-          echo "Initial unit_test_failure"$(variables.unit_test_failure)
-          if [ $failed_tests -ne 0 ]; then 
+          # echo "Initial unit_test_failure"$(variables.unit_test_failure)
+          if [ $failed_unit_tests -ne 0 ]; then 
             echo "unit tests failed"
             echo "##vso[task.setvariable variable=UNIT_TESTS_FAILURE;isOutput=true]true"
           else
             echo "unit tests passed"
             echo "##vso[task.setvariable variable=UNIT_TESTS_FAILURE;isOutput=true]false"
+          fi
+
+          path_to_integtest=$(find "$(Build.ArtifactStagingDirectory)/TestResults/integrationtestresults" -type f -name "integrationtest_results.xml" -print -quit)
+          if [ -n "$path_to_integtest" ]; then
+            test_counters=$(awk -F: '/ResultSummary/ { getline; print $0 }' $path_to_integtest)
+            # Remove the last tag </TestRun>
+            test_counters=$(expr match "$test_counters" '\(.*/>\)')
+            failed_integ_tests=$(echo "$test_counters" | grep -o 'failed="[0-9]\+"' | awk -F'"' '{print $2}')
+            echo "Failed Tests: "$failed_integ_tests
+          else
+            echo "No .xml file found in $(Build.ArtifactStagingDirectory)/TestResults/integrationtestresults"
+          fi
+          # echo "Initial integ_test_failure"$(variables.integ_test_failure)
+          if [ $failed_integ_tests -ne 0 ]; then 
+            echo "integ tests failed"
+            echo "##vso[task.setvariable variable=UNIT_TESTS_FAILURE;isOutput=true]true"
+          else
+            echo "integ tests passed"
+            echo "##vso[task.setvariable variable=INTEG_TESTS_FAILURE;isOutput=true]false"
           fi
           
     - task: PublishBuildArtifacts@1
@@ -151,7 +169,9 @@ stages:
 
 - stage: Deployable_DockerImage_With_Runtime_Only
   dependsOn: Run_Tests
-  condition: eq(dependencies.Run_Tests.outputs['Build_Container_Run_Tests.testsResult.UNIT_TESTS_FAILURE'], false)
+  condition: |
+    and ( eq(dependencies.Run_Tests.outputs['Build_Container_Run_Tests.testsResult.UNIT_TESTS_FAILURE'], false),
+          eq(dependencies.Run_Tests.outputs['Build_Container_Run_Tests.testsResult.INTEG_TESTS_FAILURE'], false) )
   displayName: "Build Docker image with Runtime Only"
   jobs:
   - job: Build_Deployable_Container
